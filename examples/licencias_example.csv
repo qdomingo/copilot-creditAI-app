@@ -1,0 +1,6 @@
+email,cod_empleado,nombre_empleado,proyecto,empresa,tipo_licencia,estado_licencia,creditos_base,grupo
+mcubells@minsait.com,E001,María Cubells López,Proyecto Alpha,Minsait,Premium,Asignada,300,Team A
+jgarcia@indra.com,E002,Juan García Pérez,Proyecto Beta,Indra,Business,Asignada,300,Team B
+alopez@minsait.com,E003,Ana López Martínez,Proyecto Gamma,Minsait,Premium,Asignada,300,Team A
+crodriguez@indra.com,E004,Carlos Rodríguez Sánchez,Proyecto Delta,Indra,Business,Cancelada,300,Team C
+mmartinez@minsait.com,E005,Miguel Martínez Fernández,Proyecto Alpha,Minsait,Premium,Asignada,300,Team A

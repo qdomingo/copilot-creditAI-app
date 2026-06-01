@@ -1,0 +1,27 @@
+# Core
+python-dotenv>=1.0.0
+pydantic>=2.5.0
+
+# Data Processing
+pandas>=2.0.0
+openpyxl>=3.1.0
+xlsxwriter>=3.1.0
+
+# HTTP Requests (para futuros usos opcionales)
+requests>=2.31.0
+
+# Web Interface
+streamlit>=1.29.0
+plotly>=5.18.0
+altair>=5.2.0
+
+# Utils
+python-dateutil>=2.8.0
+pytz>=2023.3
+
+# Logging
+loguru>=0.7.0
+
+# Testing
+pytest>=7.4.0
+pytest-cov>=4.1.0

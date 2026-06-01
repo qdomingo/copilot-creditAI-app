@@ -1,0 +1,612 @@
+"""
+Aplicación principal de Streamlit para control de créditos de GitHub Copilot
+"""
+import streamlit as st
+import pandas as pd
+from pathlib import Path
+from datetime import datetime
+import sys
+from pathlib import Path
+
+# Agregar el directorio raíz al path para importaciones
+root_dir = Path(__file__).parent.parent
+if str(root_dir) not in sys.path:
+    sys.path.insert(0, str(root_dir))
+
+from src.utils.logger import setup_logger
+from src.etl.transform_licencias import transformar_excel_licencias
+from src.etl.csv_credits_loader import GitHubCreditsCSVLoader
+from src.dashboard.components import (
+    show_metric_card,
+    create_user_usage_chart,
+    create_license_distribution_chart,
+    create_timeline_chart,
+    show_user_table,
+    show_filters_sidebar,
+    apply_filters
+)
+from config import (
+    APP_TITLE, 
+    APP_ICON, 
+    OUTPUT_EXCEL_PATH,
+    INPUT_DIR,
+    PROCESSED_DIR,
+    CSV_CREDITS_DIR,
+    ensure_directories
+)
+
+# Configurar página
+st.set_page_config(
+    page_title=APP_TITLE,
+    page_icon=APP_ICON,
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Setup logger
+logger = setup_logger()
+
+# CSS personalizado para estética moderna
+st.markdown("""
+    <style>
+    .main {
+        padding: 0rem 1rem;
+    }
+    .stMetric {
+        background-color: #f0f2f6;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    h1 {
+        color: #1f77b4;
+        padding-bottom: 1rem;
+    }
+    .upload-section {
+        background-color: #f8f9fa;
+        padding: 2rem;
+        border-radius: 0.5rem;
+        margin: 1rem 0;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+
+def init_session_state():
+    """Inicializar estado de la sesión"""
+    if 'df_usuarios' not in st.session_state:
+        st.session_state.df_usuarios = None
+    if 'csv_credits_loader' not in st.session_state:
+        st.session_state.csv_credits_loader = GitHubCreditsCSVLoader()
+    if 'csv_credits_loaded' not in st.session_state:
+        st.session_state.csv_credits_loaded = False
+    if 'archivo_origen' not in st.session_state:
+        st.session_state.archivo_origen = None
+    if 'archivo_transformado' not in st.session_state:
+        st.session_state.archivo_transformado = None
+    if 'archivo_csv_credits' not in st.session_state:
+        st.session_state.archivo_csv_credits = None
+
+
+def load_processed_data():
+    """Cargar datos ya procesados si existen en Excel-CreditsIA"""
+    # Buscar el archivo más reciente en Excel-CreditsIA
+    processed_dir = Path(PROCESSED_DIR)
+    latest_file = get_latest_file_in_dir(processed_dir, "*.xlsx")
+    
+    if latest_file and latest_file.exists():
+        try:
+            df = pd.read_excel(latest_file)
+            logger.info(f"Datos cargados desde: {latest_file}")
+            
+            # Agregar columna 'estado' si no existe (necesaria para sincronización)
+            if 'estado' not in df.columns:
+                df['estado'] = 'pendiente'
+            
+            # Guardar la ruta del archivo transformado
+            st.session_state.archivo_transformado = latest_file
+            return df
+        except Exception as e:
+            logger.error(f"Error al cargar datos procesados: {e}")
+    return None
+
+
+def get_latest_file_in_dir(directory: Path, pattern: str = "*.xlsx"):
+    """Obtener el archivo más reciente en un directorio"""
+    try:
+        files = list(directory.glob(pattern))
+        if not files:
+            return None
+        # Obtener el archivo más reciente por fecha de modificación
+        latest_file = max(files, key=lambda f: f.stat().st_mtime)
+        return latest_file
+    except Exception as e:
+        logger.error(f"Error al buscar archivos: {e}")
+        return None
+
+
+def process_excel_file(uploaded_file):
+    """Procesar archivo Excel subido: Guardar en Excel-LicenciasIA y transformar a Excel-CreditsIA"""
+    try:
+        # Paso 1: Guardar archivo en Excel-LicenciasIA
+        input_dir = Path(INPUT_DIR)
+        input_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Nombre del archivo con timestamp
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        original_filename = uploaded_file.name
+        saved_filename = f"{timestamp}_{original_filename}"
+        input_path = input_dir / saved_filename
+        
+        with st.spinner(f"Guardando archivo en {INPUT_DIR.name}..."):
+            with open(input_path, "wb") as f:
+                f.write(uploaded_file.getbuffer())
+            
+            st.session_state.archivo_origen = input_path
+            st.success(f"✅ Archivo guardado: {saved_filename}")
+            logger.info(f"Archivo guardado en: {input_path}")
+        
+        # Paso 2: Transformar y guardar en Excel-CreditsIA
+        output_dir = Path(PROCESSED_DIR)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        output_filename = f"licencias_transformadas_{timestamp}.xlsx"
+        output_path = output_dir / output_filename
+        
+        with st.spinner("Transformando archivo..."):
+            df_transformed = transformar_excel_licencias(str(input_path), str(output_path))
+            
+            # Agregar columna 'estado' para uso interno (no se guarda en Excel)
+            if 'estado' not in df_transformed.columns:
+                df_transformed['estado'] = 'pendiente'
+            
+            st.session_state.archivo_transformado = output_path
+            st.success(f"✅ Transformación completada: {len(df_transformed)} registros procesados")
+            st.success(f"📁 Archivo transformado guardado: {output_filename}")
+            logger.info(f"Archivo transformado guardado en: {output_path}")
+        
+        return df_transformed
+        
+    except Exception as e:
+        st.error(f"❌ Error al procesar archivo: {e}")
+        logger.error(f"Error en process_excel_file: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return None
+
+
+def load_csv_credits(uploaded_file):
+    """Cargar CSV de créditos de GitHub"""
+    try:
+        # Guardar archivo CSV
+        csv_dir = Path(CSV_CREDITS_DIR)
+        csv_dir.mkdir(parents=True, exist_ok=True)
+        
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        csv_filename = f"github_credits_{timestamp}.csv"
+        csv_path = csv_dir / csv_filename
+        
+        with st.spinner(f"Guardando CSV en {CSV_CREDITS_DIR}..."):
+            with open(csv_path, "wb") as f:
+                f.write(uploaded_file.getbuffer())
+            
+            st.session_state.archivo_csv_credits = csv_path
+            logger.info(f"CSV guardado en: {csv_path}")
+        
+        # Cargar CSV con el loader
+        with st.spinner("Cargando datos de créditos..."):
+            loader = st.session_state.csv_credits_loader
+            df_credits = loader.load_csv(str(csv_path))
+            
+            # Obtener estadísticas
+            stats = loader.get_statistics()
+            
+            st.session_state.csv_credits_loaded = True
+            st.success(f"✅ CSV cargado exitosamente")
+            st.info(f"📊 {stats.get('total_records', 0)} registros | {stats.get('unique_users', 0)} usuarios únicos")
+            
+            return True
+            
+    except Exception as e:
+        st.error(f"❌ Error al cargar CSV: {e}")
+        logger.error(f"Error en load_csv_credits: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return False
+
+
+def merge_credits_with_licenses():
+    """Combinar datos de créditos con licencias"""
+    try:
+        if not st.session_state.csv_credits_loaded:
+            st.warning("⚠️ Primero carga el CSV de créditos")
+            return False
+        
+        if st.session_state.df_usuarios is None:
+            st.warning("⚠️ No hay datos de licencias cargados")
+            return False
+        
+        with st.spinner("Combinando datos de créditos con licencias..."):
+            loader = st.session_state.csv_credits_loader
+            
+            # Determinar columna de alias
+            alias_col = 'cdalias' if 'cdalias' in st.session_state.df_usuarios.columns else 'alias'
+            
+            # Combinar datos
+            df_merged = loader.merge_with_licenses(
+                st.session_state.df_usuarios,
+                license_alias_col=alias_col
+            )
+            
+            # Actualizar dataframe
+            st.session_state.df_usuarios = df_merged
+            
+            # Guardar datos actualizados
+            if st.session_state.archivo_transformado:
+                output_path = Path(st.session_state.archivo_transformado)
+                df_merged.to_excel(output_path, index=False)
+                logger.info(f"Datos combinados guardados en: {output_path}")
+            
+            st.success("✅ Datos de créditos combinados con licencias")
+            return True
+            
+    except Exception as e:
+        st.error(f"❌ Error al combinar datos: {e}")
+        logger.error(f"Error en merge_credits_with_licenses: {e}")
+        return False
+
+
+def main():
+    """Función principal de la aplicación"""
+    
+    # Inicializar
+    init_session_state()
+    ensure_directories()
+    
+    # Header
+    col1, col2 = st.columns([1, 5])
+    with col1:
+        st.markdown(f"<h1 style='font-size: 4rem; margin: 0;'>{APP_ICON}</h1>", unsafe_allow_html=True)
+    with col2:
+        st.title(APP_TITLE)
+        st.caption("Monitoreo y control de créditos de GitHub Copilot")
+    
+    st.divider()
+    
+    # Sidebar
+    with st.sidebar:
+        st.header("⚙️ Configuración")
+        
+        st.divider()
+        
+        st.header("📄 Cargar CSV de Créditos")
+        uploaded_csv = st.file_uploader(
+            "Subir CSV de GitHub",
+            type=['csv'],
+            help="CSV con datos de créditos de GitHub (formato empresarial)",
+            key="csv_uploader"
+        )
+        
+        if uploaded_csv is not None:
+            if st.button("🔄 Cargar CSV", use_container_width=True, type="primary"):
+                if load_csv_credits(uploaded_csv):
+                    st.rerun()
+        
+        if st.session_state.csv_credits_loaded:
+            st.success("✅ CSV de créditos cargado")
+            
+            # Mostrar estadísticas del CSV
+            loader = st.session_state.csv_credits_loader
+            stats = loader.get_statistics()
+            
+            with st.expander("📊 Ver estadísticas CSV"):
+                st.metric("Registros totales", stats.get('total_records', 0))
+                st.metric("Usuarios únicos", stats.get('unique_users', 0))
+                st.metric("Cantidad total", f"{stats.get('total_quantity', 0):.2f}")
+                
+                if stats.get('date_range'):
+                    date_range = stats['date_range']
+                    if date_range.get('start') and date_range.get('end'):
+                        st.caption(f"Rango: {date_range['start'].strftime('%Y-%m-%d')} a {date_range['end'].strftime('%Y-%m-%d')}")
+        else:
+            st.info("ℹ️ CSV no cargado")
+        
+        st.divider()
+        
+        st.header("📄 Cargar Excel de Licencias")
+        uploaded_file = st.file_uploader(
+            "Subir Excel de licencias",
+            type=['xlsx', 'xls'],
+            help="Excel de licencias con la estructura esperada",
+            key="excel_uploader"
+        )
+        
+        if uploaded_file is not None:
+            if st.button("🔄 Procesar Excel", use_container_width=True, type="primary"):
+                df_processed = process_excel_file(uploaded_file)
+                if df_processed is not None:
+                    st.session_state.df_usuarios = df_processed
+                    st.rerun()
+        
+        st.divider()
+        
+        # Botón de descarga del Excel transformado
+        if st.session_state.archivo_transformado and Path(st.session_state.archivo_transformado).exists():
+            st.header("📥 Descargar")
+            with open(st.session_state.archivo_transformado, 'rb') as f:
+                st.download_button(
+                    label="📄 Descargar Excel Transformado",
+                    data=f,
+                    file_name=st.session_state.archivo_transformado.name,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+    
+    # Main content
+    tabs = st.tabs(["📊 Dashboard", "👥 Usuarios", "🔄 Combinar Datos", "📈 Reportes"])
+    
+    # Tab 1: Dashboard
+    with tabs[0]:
+        if st.session_state.df_usuarios is None:
+            st.session_state.df_usuarios = load_processed_data()
+        
+        if st.session_state.df_usuarios is not None:
+            df_original = st.session_state.df_usuarios
+            
+            # Filtrar solo licencias asignadas (no canceladas)
+            if 'estado_licencia' in df_original.columns:
+                df = df_original[df_original['estado_licencia'].str.strip().str.lower() == 'asignada'].copy()
+            else:
+                df = df_original.copy()
+            
+            # Métricas principales (4 columnas)
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                show_metric_card(
+                    "Total Usuarios",
+                    str(len(df)),
+                    icon="👥"
+                )
+            
+            with col2:
+                # Créditos Totales = suma de creditos_base
+                if 'creditos_base' in df.columns:
+                    total_creditos_base = df['creditos_base'].sum()
+                else:
+                    total_creditos_base = 0
+                show_metric_card(
+                    "Créditos Totales",
+                    f"{total_creditos_base:.0f}",
+                    icon="💳"
+                )
+            
+            with col3:
+                # Créditos Usados = suma de creditos_usados
+                if 'creditos_usados' in df.columns:
+                    total_creditos_usados = df['creditos_usados'].sum()
+                else:
+                    total_creditos_usados = 0
+                show_metric_card(
+                    "Créditos Usados",
+                    f"{total_creditos_usados:.0f}",
+                    icon="📊"
+                )
+            
+            with col4:
+                # Usar tipo_licencia o licencia según lo que esté disponible
+                col_licencia = 'tipo_licencia' if 'tipo_licencia' in df.columns else 'licencia'
+                tipos_licencia = df[col_licencia].nunique() if col_licencia in df.columns else 0
+                show_metric_card(
+                    "Tipos de Licencia",
+                    str(tipos_licencia),
+                    icon="📜"
+                )
+            
+            st.divider()
+            
+            # Gráficos
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                fig_users = create_user_usage_chart(df)
+                st.plotly_chart(fig_users, use_container_width=True)
+            
+            with col2:
+                fig_licenses = create_license_distribution_chart(df)
+                st.plotly_chart(fig_licenses, use_container_width=True)
+            
+        else:
+            st.info("📁 No hay datos cargados. Por favor, sube un archivo Excel desde la barra lateral.")
+    
+    # Tab 2: Usuarios
+    with tabs[1]:
+        if st.session_state.df_usuarios is not None:
+            df_original = st.session_state.df_usuarios
+            
+            # Filtrar solo licencias asignadas (no canceladas)
+            if 'estado_licencia' in df_original.columns:
+                df = df_original[df_original['estado_licencia'].str.strip().str.lower() == 'asignada'].copy()
+            else:
+                df = df_original.copy()
+            
+            # Filtros
+            filters = show_filters_sidebar(df)
+            df_filtered = apply_filters(df, filters)
+            
+            st.subheader(f"👥 Lista de Usuarios ({len(df_filtered)} registros)")
+            
+            # Buscador
+            search = st.text_input("🔍 Buscar usuario", placeholder="Nombre, email o alias...")
+            
+            if search:
+                # Crear máscara de búsqueda solo para columnas que existan
+                mask = pd.Series([False] * len(df_filtered), index=df_filtered.index)
+                
+                for col in ['nombre_empleado', 'email', 'cdalias', 'cod_empleado', 'proyecto', 'empresa']:
+                    if col in df_filtered.columns:
+                        mask = mask | df_filtered[col].astype(str).str.contains(search, case=False, na=False)
+                
+                df_filtered = df_filtered[mask]
+            
+            # Tabla
+            show_user_table(df_filtered)
+            
+            # Descargar
+            st.download_button(
+                label="📥 Descargar datos filtrados",
+                data=df_filtered.to_csv(index=False).encode('utf-8'),
+                file_name=f"usuarios_filtrados_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv"
+            )
+        else:
+            st.info("📁 No hay datos cargados.")
+    
+    # Tab 3: Combinar Datos
+    with tabs[2]:
+        st.subheader("🔄 Combinar Datos de Créditos con Licencias")
+        
+        if st.session_state.df_usuarios is not None:
+            df_original = st.session_state.df_usuarios
+            
+            # Filtrar solo licencias asignadas para el conteo
+            if 'estado_licencia' in df_original.columns:
+                df_asignadas = df_original[df_original['estado_licencia'].str.strip().str.lower() == 'asignada']
+                st.info(f"📊 {len(df_asignadas)} usuarios con licencias asignadas")
+            else:
+                st.info(f"📊 {len(df_original)} usuarios en base de datos local")
+            
+            # Verificar si CSV está cargado
+            if not st.session_state.csv_credits_loaded:
+                st.warning("⚠️ Primero debes cargar el CSV de créditos desde la barra lateral")
+            else:
+                st.success("✅ CSV de créditos cargado y listo para combinar")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                if st.button("🔄 Combinar Créditos con Licencias", use_container_width=True, type="primary"):
+                    if merge_credits_with_licenses():
+                        st.rerun()
+            
+            with col2:
+                if st.button("🔄 Recargar datos locales", use_container_width=True):
+                    st.session_state.df_usuarios = load_processed_data()
+                    st.rerun()
+            
+            st.divider()
+            
+            # Información sobre columnas de créditos
+            if st.session_state.csv_credits_loaded:
+                st.markdown("### 📊 Columnas de Créditos Disponibles")
+                st.markdown("""
+                Al combinar los datos, se agregarán las siguientes columnas:
+                - **creditos_usados**: Créditos totales usados (suma de aic_gross_amount)
+                - **total_quantity**: Cantidad total de requests
+                - **total_aic_quantity**: Cantidad AIC total
+                - **first_date**: Primera fecha de uso
+                - **last_date**: Última fecha de uso
+                - **records_count**: Número de registros en el CSV
+                
+                💡 **Nota**: Los usernames se normalizan automáticamente (ej: `mcubells_indra` → `mcubells`) para hacer match con los alias del Excel.
+                """)
+            
+            # Información de última actualización
+            if 'fecha_procesamiento' in st.session_state.df_usuarios.columns:
+                ultima_fecha = st.session_state.df_usuarios['fecha_procesamiento'].max()
+                st.caption(f"Última actualización: {ultima_fecha}")
+        else:
+            st.warning("⚠️ No hay datos para sincronizar. Carga un archivo Excel primero.")
+    
+    # Tab 4: Reportes
+    with tabs[3]:
+        st.subheader("📈 Reportes y Análisis")
+        
+        if st.session_state.df_usuarios is not None:
+            df_original = st.session_state.df_usuarios
+            
+            # Filtrar solo licencias asignadas (no canceladas)
+            if 'estado_licencia' in df_original.columns:
+                df = df_original[df_original['estado_licencia'].str.strip().str.lower() == 'asignada'].copy()
+            else:
+                df = df_original.copy()
+            
+            # Resumen ejecutivo
+            st.markdown("### 📋 Resumen Ejecutivo")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("**Por Tipo de Licencia:**")
+                # Usar tipo_licencia o licencia según lo que esté disponible
+                col_licencia = 'tipo_licencia' if 'tipo_licencia' in df.columns else 'licencia'
+                # Usar la primera columna disponible para contar
+                col_count = None
+                for col in ['email', 'cdalias', 'alias', 'nombre', 'cod_empleado']:
+                    if col in df.columns:
+                        col_count = col
+                        break
+                
+                if col_count:
+                    license_summary = df.groupby(col_licencia).agg({
+                        col_count: 'count',
+                        'creditos_usados': 'sum'
+                    }).rename(columns={col_count: 'Usuarios', 'creditos_usados': 'Créditos'})
+                    st.dataframe(license_summary, use_container_width=True)
+            
+            with col2:
+                st.markdown("**Por Estado GitHub:**")
+                # Usar la primera columna disponible para contar
+                col_count = None
+                for col in ['email', 'cdalias', 'cod_empleado', 'nombre_empleado']:
+                    if col in df.columns:
+                        col_count = col
+                        break
+                
+                if col_count and 'estado' in df.columns:
+                    status_summary = df.groupby('estado').agg({
+                        col_count: 'count'
+                    }).rename(columns={col_count: 'Usuarios'})
+                    st.dataframe(status_summary, use_container_width=True)
+                else:
+                    st.info("ℹ️ Sincroniza con GitHub para ver el estado")
+            
+            # Exportar reporte
+            st.divider()
+            
+            if st.button("📥 Generar Reporte Completo", use_container_width=True):
+                report_path = Path(f"data/reports/reporte_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
+                report_path.parent.mkdir(parents=True, exist_ok=True)
+                
+                with pd.ExcelWriter(report_path, engine='xlsxwriter') as writer:
+                    # Hoja principal con datos
+                    df_to_save = df.drop(columns=['estado'], errors='ignore')
+                    df_to_save.to_excel(writer, sheet_name='Datos', index=False)
+                    
+                    # Resumen por licencia
+                    if 'license_summary' in locals():
+                        license_summary.to_excel(writer, sheet_name='Por Licencia')
+                    
+                    # Resumen por estado (solo si existe)
+                    if 'estado' in df.columns and 'status_summary' in locals():
+                        status_summary.to_excel(writer, sheet_name='Por Estado')
+                
+                st.success(f"✅ Reporte generado: {report_path}")
+                
+                with open(report_path, 'rb') as f:
+                    st.download_button(
+                        label="📥 Descargar Reporte",
+                        data=f,
+                        file_name=report_path.name,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+        else:
+            st.info("📁 No hay datos para generar reportes.")
+    
+    # Footer
+    st.divider()
+    st.caption(f"GitHub Copilot Credits Control v1.0.0 | {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+
+
+if __name__ == "__main__":
+    main()

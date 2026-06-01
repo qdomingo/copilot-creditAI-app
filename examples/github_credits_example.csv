@@ -1,0 +1,7 @@
+date,username,product,sku,model,quantity,unit_type,applied_cost_per_quantity,gross_amount,discount_amount,net_amount,exceeds_quota,total_monthly_quota,organization,cost_center_name,aic_quantity,aic_gross_amount
+2026-05-01,jcreyg_indra,copilot,copilot_premium_request,Auto: Claude Haiku 4.5,1.5,requests,0.04,0.06,0.06,0,False,300,Minsait-GA,Minsait,11.0440755,0.110440755
+2026-05-01,maria_lopez,copilot,copilot_premium_request,Auto: Claude Sonnet 4.0,2.0,requests,0.08,0.16,0.16,0,False,300,Minsait-GA,Minsait,15.2345678,0.152345678
+2026-05-02,jcreyg_indra,copilot,copilot_premium_request,Auto: GPT-4o,3.5,requests,0.10,0.35,0.35,0,False,300,Minsait-GA,Minsait,25.5678901,0.255678901
+2026-05-02,carlos_garcia_indra,copilot,copilot_premium_request,Auto: Claude Haiku 4.5,1.0,requests,0.04,0.04,0.04,0,False,300,Minsait-GA,Minsait,8.1234567,0.081234567
+2026-05-03,mcubells_indra,copilot,copilot_premium_request,Auto: Claude Sonnet 4.0,2.5,requests,0.08,0.20,0.20,0,False,300,Minsait-GA,Minsait,18.7654321,0.187654321
+2026-05-03,maria_lopez,copilot,copilot_premium_request,Auto: GPT-4o,1.8,requests,0.10,0.18,0.18,0,False,300,Minsait-GA,Minsait,12.3456789,0.123456789

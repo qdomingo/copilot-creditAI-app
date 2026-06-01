@@ -1,0 +1,210 @@
+"""
+Cliente para interactuar con la API de GitHub
+"""
+from typing import Optional, Dict, List
+from github import Github, GithubException
+from loguru import logger
+import requests
+
+from config import GITHUB_TOKEN, GITHUB_ORG, API_TIMEOUT
+
+
+class GitHubClient:
+    """Cliente para API de GitHub"""
+    
+    def __init__(self, token: Optional[str] = None, org: Optional[str] = None):
+        self.token = token or GITHUB_TOKEN
+        self.org_name = org or GITHUB_ORG
+        
+        if not self.token:
+            raise ValueError("GitHub token is required")
+        
+        self.client = Github(self.token)
+        self.org = None
+        
+    def connect(self):
+        """Conectar y validar acceso a la organización"""
+        try:
+            logger.info(f"Conectando a organización: {self.org_name}")
+            self.org = self.client.get_organization(self.org_name)
+            logger.success(f"Conectado exitosamente a: {self.org.name}")
+            return True
+        except GithubException as e:
+            logger.error(f"Error al conectar a GitHub: {e}")
+            raise
+    
+    def get_copilot_seats(self) -> List[Dict]:
+        """
+        Obtener información de seats (licencias) de Copilot
+        
+        Nota: Esta es una API en preview, puede requerir ajustes
+        """
+        try:
+            logger.info("Obteniendo información de Copilot seats...")
+            
+            # Usar la API REST de GitHub para Copilot
+            headers = {
+                "Authorization": f"Bearer {self.token}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28"
+            }
+            
+            url = f"https://api.github.com/orgs/{self.org_name}/copilot/billing/seats"
+            
+            response = requests.get(url, headers=headers, timeout=API_TIMEOUT)
+            response.raise_for_status()
+            
+            data = response.json()
+            seats = data.get('seats', [])
+            
+            logger.success(f"Se obtuvieron {len(seats)} seats de Copilot")
+            return seats
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error al obtener Copilot seats: {e}")
+            return []
+    
+    def get_copilot_usage(self, since: Optional[str] = None, until: Optional[str] = None) -> List[Dict]:
+        """
+        Obtener métricas de uso de Copilot a nivel organización
+        
+        Args:
+            since: Fecha desde (formato ISO 8601, ej: '2024-01-01')
+            until: Fecha hasta (formato ISO 8601, ej: '2024-12-31')
+            
+        Returns:
+            Lista de métricas de uso por día
+            
+        Nota: Esta API proporciona métricas agregadas, NO por usuario individual
+        Documentación: https://docs.github.com/en/rest/copilot/copilot-usage
+        """
+        try:
+            logger.info("Obteniendo métricas de uso de Copilot...")
+            
+            headers = {
+                "Authorization": f"Bearer {self.token}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28"
+            }
+            
+            # Construir URL con parámetros opcionales
+            url = f"https://api.github.com/orgs/{self.org_name}/copilot/usage"
+            params = {}
+            if since:
+                params['since'] = since
+            if until:
+                params['until'] = until
+            
+            response = requests.get(url, headers=headers, params=params, timeout=API_TIMEOUT)
+            response.raise_for_status()
+            
+            data = response.json()
+            
+            # Verificar si es una lista o un objeto con 'data'
+            if isinstance(data, list):
+                metrics = data
+            else:
+                metrics = data.get('data', [])
+            
+            logger.success(f"Métricas de uso obtenidas: {len(metrics)} días")
+            return metrics
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error al obtener métricas de uso: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                logger.error(f"Respuesta del servidor: {e.response.text}")
+            return []
+    
+    def get_copilot_metrics_summary(self) -> Dict:
+        """
+        Obtener resumen de métricas de Copilot
+        
+        Returns:
+            Dict con métricas resumidas
+        """
+        try:
+            logger.info("Obteniendo resumen de métricas de Copilot...")
+            
+            headers = {
+                "Authorization": f"Bearer {self.token}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28"
+            }
+            
+            url = f"https://api.github.com/orgs/{self.org_name}/copilot/billing"
+            
+            response = requests.get(url, headers=headers, timeout=API_TIMEOUT)
+            response.raise_for_status()
+            
+            data = response.json()
+            logger.success("Resumen de métricas obtenido")
+            
+            return data
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error al obtener resumen de métricas: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                logger.error(f"Respuesta del servidor: {e.response.text}")
+            return {}
+    
+    def get_user_copilot_activity(self, username: str) -> Dict:
+        """
+        Obtener actividad de Copilot para un usuario específico
+        
+        Args:
+            username: GitHub username del usuario
+            
+        Returns:
+            Dict con información de actividad
+        """
+        try:
+            logger.debug(f"Obteniendo actividad de Copilot para: {username}")
+            
+            # Esta información vendría de los seats
+            seats = self.get_copilot_seats()
+            
+            for seat in seats:
+                if seat.get('assignee', {}).get('login', '').lower() == username.lower():
+                    return {
+                        'username': username,
+                        'last_activity': seat.get('last_activity_at'),
+                        'created_at': seat.get('created_at'),
+                        'team': seat.get('assigning_team', {}).get('name')
+                    }
+            
+            logger.warning(f"No se encontró información de Copilot para: {username}")
+            return {}
+            
+        except Exception as e:
+            logger.error(f"Error al obtener actividad de usuario: {e}")
+            return {}
+    
+    def get_organization_members(self) -> List[Dict]:
+        """Obtener lista de miembros de la organización"""
+        try:
+            if not self.org:
+                self.connect()
+            
+            logger.info("Obteniendo miembros de la organización...")
+            members = []
+            
+            for member in self.org.get_members():
+                members.append({
+                    'login': member.login,
+                    'id': member.id,
+                    'name': member.name,
+                    'email': member.email
+                })
+            
+            logger.success(f"Se obtuvieron {len(members)} miembros")
+            return members
+            
+        except GithubException as e:
+            logger.error(f"Error al obtener miembros: {e}")
+            return []
+    
+    def close(self):
+        """Cerrar conexión"""
+        if self.client:
+            self.client.close()
+            logger.info("Conexión a GitHub cerrada")
