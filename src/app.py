@@ -143,13 +143,14 @@ def process_files(excel_file, csv_file):
         with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp_excel:
             tmp_excel.write(excel_file.getbuffer())
             tmp_excel_path = tmp_excel.name
-        
+
+        # Cargar CSV agregado (incluye todos los días)
+        df_csv_raw = pd.read_csv(csv_file)
+
+        # Crear CSV temporal para el proceso ETL existente
         with tempfile.NamedTemporaryFile(delete=False, suffix='.csv') as tmp_csv:
-            tmp_csv.write(csv_file.getbuffer())
+            df_csv_raw.to_csv(tmp_csv.name, index=False)
             tmp_csv_path = tmp_csv.name
-        
-        # Cargar CSV original para guardarlo en session_state
-        df_csv_raw = pd.read_csv(tmp_csv_path)
         
         # Procesar
         with st.spinner("Procesando archivos..."):
@@ -167,6 +168,7 @@ def process_files(excel_file, csv_file):
             Path(tmp_csv_path).unlink()
             
             st.success(f"✅ Procesamiento completado: {len(df_result)} registros")
+            st.success(f"📄 CSV cargado: {len(df_csv_raw)} fila(s)")
             st.success(f"📁 Archivo guardado: {Path(output_path).name}")
             
             return True
@@ -210,9 +212,9 @@ def main():
         
         st.markdown("### 📄 CSV de Créditos GitHub")
         csv_file = st.file_uploader(
-            "Subir CSV de créditos",
+            "Subir CSV agregado de créditos",
             type=['csv'],
-            help="CSV con columnas: username, aic_gross_amount, date, etc.",
+            help="CSV agregado con el histórico diario (username, aic_gross_amount, date, etc.)",
             key="csv_uploader"
         )
         
@@ -250,7 +252,7 @@ def main():
                 )
     
     # Main content
-    tabs = st.tabs(["📊 Dashboard", "👥 Usuarios", "📈 Reportes"])
+    tabs = st.tabs(["📊 Dashboard", "👥 Usuarios", "📈 Reportes", "🧩 Detalle de usuario"])
     
     # Tab 1: Dashboard
     with tabs[0]:
@@ -535,6 +537,94 @@ def main():
                         st.info("📊 Columna 'aic_quantity' no disponible en el CSV")
             else:
                 st.info("📊 No hay datos de modelos disponibles. Procesa los archivos para ver esta información.")
+
+            # Análisis detallado por usuario (a partir del CSV consolidado)
+            st.divider()
+            st.markdown("### 👤 Análisis Detallado por Usuario")
+
+            if st.session_state.df_csv_raw is not None and 'username' in st.session_state.df_csv_raw.columns:
+                df_csv = st.session_state.df_csv_raw.copy()
+
+                # Detectar columna principal de tokens (si existe)
+                token_col = None
+                token_candidates = ['aic_quantity', 'total_tokens', 'tokens', 'input_tokens', 'prompt_tokens']
+                for col in token_candidates:
+                    if col in df_csv.columns:
+                        token_col = col
+                        break
+
+                usernames = sorted(df_csv['username'].dropna().astype(str).unique().tolist())
+
+                if usernames:
+                    selected_user = st.selectbox(
+                        "Selecciona un usuario",
+                        options=usernames,
+                        help="Se mostrarán llamadas y consumo de tokens/créditos del usuario seleccionado"
+                    )
+
+                    df_user = df_csv[df_csv['username'].astype(str) == selected_user].copy()
+
+                    if 'date' in df_user.columns:
+                        df_user['date'] = pd.to_datetime(df_user['date'], errors='coerce')
+
+                    # Normalizar campos numéricos para evitar errores de tipo
+                    for numeric_col in ['quantity', 'aic_gross_amount', 'aic_quantity', 'total_tokens', 'tokens', 'input_tokens', 'prompt_tokens']:
+                        if numeric_col in df_user.columns:
+                            df_user[numeric_col] = pd.to_numeric(df_user[numeric_col], errors='coerce').fillna(0)
+
+                    total_registros = len(df_user)
+                    total_llamadas = float(df_user['quantity'].sum()) if 'quantity' in df_user.columns else float(total_registros)
+                    total_tokens = float(df_user[token_col].sum()) if token_col else 0.0
+                    total_creditos = float(df_user['aic_gross_amount'].sum()) if 'aic_gross_amount' in df_user.columns else 0.0
+
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("Registros", f"{total_registros:,}")
+                    with col2:
+                        st.metric("Llamadas", f"{total_llamadas:,.2f}")
+                    with col3:
+                        st.metric("Tokens", f"{total_tokens:,.2f}" if token_col else "N/D")
+                    with col4:
+                        st.metric("Créditos ($)", f"{total_creditos:,.4f}")
+
+                    # Resumen diario
+                    if 'date' in df_user.columns:
+                        df_daily = df_user.dropna(subset=['date']).copy()
+                        if not df_daily.empty:
+                            agg_map = {}
+                            if 'quantity' in df_daily.columns:
+                                agg_map['quantity'] = 'sum'
+                            if token_col:
+                                agg_map[token_col] = 'sum'
+                            if 'aic_gross_amount' in df_daily.columns:
+                                agg_map['aic_gross_amount'] = 'sum'
+
+                            if agg_map:
+                                daily_summary = df_daily.groupby(df_daily['date'].dt.date).agg(agg_map).reset_index()
+                                daily_summary = daily_summary.sort_values('date')
+
+                                st.markdown("#### Evolución Diaria")
+                                st.line_chart(daily_summary.set_index('date'), use_container_width=True)
+
+                    # Detalle de llamadas/eventos
+                    st.markdown("#### Detalle de Consumo")
+                    detail_cols = [
+                        col for col in [
+                            'date', 'model', 'sku', 'product', 'unit_type', 'quantity', token_col, 'aic_gross_amount',
+                            'organization', 'cost_center_name'
+                        ] if col and col in df_user.columns
+                    ]
+
+                    if detail_cols:
+                        if 'date' in df_user.columns:
+                            df_user = df_user.sort_values('date', ascending=False)
+                        st.dataframe(df_user[detail_cols], use_container_width=True, height=380)
+                    else:
+                        st.info("No hay columnas de detalle disponibles para mostrar.")
+                else:
+                    st.info("No se encontraron usuarios en el CSV cargado.")
+            else:
+                st.info("Carga y procesa al menos un CSV con columna 'username' para habilitar este análisis.")
             
             # Exportar reporte
             st.divider()
@@ -566,6 +656,152 @@ def main():
                     )
         else:
             st.info("📁 No hay datos para generar reportes.")
+
+    # Tab 4: Detalle de usuario
+    with tabs[3]:
+        st.subheader("🧩 Detalle de usuario")
+
+        if st.session_state.df_csv_raw is None:
+            st.info("📁 No hay CSV cargado. Procesa los archivos para habilitar el detalle por usuario.")
+        else:
+            df_csv = st.session_state.df_csv_raw.copy()
+
+            if 'username' not in df_csv.columns:
+                st.warning("⚠️ El CSV no contiene la columna 'username'.")
+            else:
+                # Preparar identificadores de usuario a partir del CSV
+                df_csv['username'] = df_csv['username'].astype(str)
+                df_csv['alias'] = df_csv['username'].str.split('_').str[0].str.strip().str.lower()
+
+                # Enriquecer con nombre (si está disponible en el Excel procesado)
+                df_csv['nombre_empleado'] = ''
+                if st.session_state.df_usuarios is not None:
+                    df_users = st.session_state.df_usuarios.copy()
+                    if 'cdalias' in df_users.columns and 'nombre_empleado' in df_users.columns:
+                        alias_to_name = (
+                            df_users[['cdalias', 'nombre_empleado']]
+                            .dropna(subset=['cdalias'])
+                            .drop_duplicates(subset=['cdalias'])
+                        )
+                        alias_to_name['cdalias'] = alias_to_name['cdalias'].astype(str).str.strip().str.lower()
+                        map_name = dict(zip(alias_to_name['cdalias'], alias_to_name['nombre_empleado']))
+                        df_csv['nombre_empleado'] = df_csv['alias'].map(map_name).fillna('')
+
+                unique_users = (
+                    df_csv[['alias', 'username', 'nombre_empleado']]
+                    .drop_duplicates()
+                    .sort_values(['alias', 'username'])
+                )
+
+                # Filtro libre que revisa alias y username (y nombre si existe)
+                user_query = st.text_input(
+                    "🔍 Buscar usuario (alias o username)",
+                    placeholder="Ejemplo: jlfdiaz o jlfdiaz_indra"
+                ).strip().lower()
+
+                if user_query:
+                    mask_query = (
+                        unique_users['alias'].astype(str).str.lower().str.contains(user_query, na=False)
+                        | unique_users['username'].astype(str).str.lower().str.contains(user_query, na=False)
+                        | unique_users['nombre_empleado'].astype(str).str.lower().str.contains(user_query, na=False)
+                    )
+                    unique_users = unique_users[mask_query]
+
+                if unique_users.empty:
+                    st.info("No se encontraron usuarios con ese criterio de búsqueda.")
+                else:
+                    # Selector de usuario mostrando alias + username + nombre
+                    options = []
+                    for _, row in unique_users.iterrows():
+                        nombre_txt = row['nombre_empleado'] if str(row['nombre_empleado']).strip() else 'Sin nombre'
+                        options.append(f"{row['alias']} | {row['username']} | {nombre_txt}")
+
+                    selected_option = st.selectbox(
+                        "👤 Selecciona usuario",
+                        options=options,
+                        help="El filtro combina alias y username para mostrar el detalle completo"
+                    )
+
+                    selected_alias = selected_option.split(' | ')[0].strip().lower()
+
+                    # Traer todas las interacciones del alias seleccionado a través de los días
+                    df_user = df_csv[df_csv['alias'].astype(str).str.lower() == selected_alias].copy()
+
+                    # Normalizar fechas y numéricos
+                    if 'date' in df_user.columns:
+                        df_user['date'] = pd.to_datetime(df_user['date'], errors='coerce')
+
+                    numeric_cols = [
+                        'quantity', 'aic_quantity', 'aic_gross_amount', 'gross_amount',
+                        'discount_amount', 'net_amount', 'total_monthly_quota'
+                    ]
+                    for c in numeric_cols:
+                        if c in df_user.columns:
+                            df_user[c] = pd.to_numeric(df_user[c], errors='coerce').fillna(0)
+
+                    # Métricas principales
+                    total_interacciones = len(df_user)
+                    total_dias = df_user['date'].dt.date.nunique() if 'date' in df_user.columns else 0
+                    total_tokens = float(df_user['aic_quantity'].sum()) if 'aic_quantity' in df_user.columns else 0.0
+                    total_consumo = float(df_user['aic_gross_amount'].sum()) if 'aic_gross_amount' in df_user.columns else 0.0
+                    agentes_usados = df_user['model'].dropna().nunique() if 'model' in df_user.columns else 0
+
+                    col1, col2, col3, col4, col5 = st.columns(5)
+                    with col1:
+                        st.metric("Interacciones", f"{total_interacciones:,}")
+                    with col2:
+                        st.metric("Días con uso", f"{total_dias:,}")
+                    with col3:
+                        st.metric("Tokens usados", f"{total_tokens:,.2f}" if 'aic_quantity' in df_user.columns else "N/D")
+                    with col4:
+                        st.metric("Consumo ($)", f"{total_consumo:,.4f}" if 'aic_gross_amount' in df_user.columns else "N/D")
+                    with col5:
+                        st.metric("Agentes/Modelos", f"{agentes_usados:,}" if 'model' in df_user.columns else "N/D")
+
+                    st.markdown("#### 📊 Consumo diario")
+                    if 'date' in df_user.columns and not df_user['date'].dropna().empty:
+                        daily_agg = {'quantity': 'sum'} if 'quantity' in df_user.columns else {}
+                        if 'aic_quantity' in df_user.columns:
+                            daily_agg['aic_quantity'] = 'sum'
+                        if 'aic_gross_amount' in df_user.columns:
+                            daily_agg['aic_gross_amount'] = 'sum'
+
+                        if daily_agg:
+                            df_daily_base = df_user.dropna(subset=['date']).copy()
+                            df_daily_base['date_only'] = df_daily_base['date'].dt.date
+                            df_daily = (
+                                df_daily_base
+                                .groupby('date_only')
+                                .agg(daily_agg)
+                                .reset_index()
+                                .rename(columns={'date_only': 'date'})
+                                .sort_values('date')
+                            )
+                            st.line_chart(df_daily.set_index('date'), use_container_width=True)
+                    else:
+                        st.info("No hay fechas válidas para construir la evolución diaria.")
+
+                    st.markdown("#### 📋 Detalle completo de interacciones")
+                    detail_cols = [
+                        col for col in [
+                            'date', 'username', 'alias', 'nombre_empleado', 'product', 'sku', 'model',
+                            'quantity', 'unit_type', 'aic_quantity', 'aic_gross_amount',
+                            'gross_amount', 'discount_amount', 'net_amount',
+                            'organization', 'cost_center_name', 'exceeds_quota', 'total_monthly_quota'
+                        ] if col in df_user.columns
+                    ]
+
+                    if 'date' in df_user.columns:
+                        df_user = df_user.sort_values('date', ascending=False)
+
+                    st.dataframe(df_user[detail_cols], use_container_width=True, height=450)
+
+                    st.download_button(
+                        label="📥 Descargar detalle del usuario",
+                        data=df_user[detail_cols].to_csv(index=False).encode('utf-8'),
+                        file_name=f"detalle_usuario_{selected_alias}_{datetime.now().strftime('%Y%m%d')}.csv",
+                        mime="text/csv"
+                    )
     
     # Footer
     st.divider()
