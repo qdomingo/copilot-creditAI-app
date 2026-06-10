@@ -23,6 +23,28 @@ class GitHubCreditsCSVLoader:
     def __init__(self):
         self.df_credits = None
         self.file_path = None
+
+    @staticmethod
+    def _build_effective_credit_columns(df: pd.DataFrame) -> pd.DataFrame:
+        """Crear columnas efectivas de créditos según unit_type."""
+        if df is None or df.empty:
+            return df
+
+        df_copy = df.copy()
+
+        unit_type = df_copy.get('unit_type', pd.Series('', index=df_copy.index)).astype(str).str.strip().str.lower()
+        is_ai_credits = unit_type == 'ai-credits'
+
+        quantity = pd.to_numeric(df_copy.get('quantity', pd.Series(0, index=df_copy.index)), errors='coerce').fillna(0)
+        aic_quantity = pd.to_numeric(df_copy.get('aic_quantity', pd.Series(0, index=df_copy.index)), errors='coerce').fillna(0)
+        aic_gross_amount = pd.to_numeric(df_copy.get('aic_gross_amount', pd.Series(0, index=df_copy.index)), errors='coerce').fillna(0)
+
+        # Desde junio en unit_type=ai-credits, quantity representa los créditos consumidos.
+        # Se multiplica por 0.01 para convertir de créditos a dólares (ej: 2000 créditos = $20)
+        df_copy['effective_aic_quantity'] = aic_quantity.where(~is_ai_credits, quantity)
+        df_copy['effective_creditos_usados'] = aic_gross_amount.where(~is_ai_credits, quantity * 0.01)
+
+        return df_copy
     
     def load_csv(self, file_path: str) -> pd.DataFrame:
         """
@@ -65,6 +87,9 @@ class GitHubCreditsCSVLoader:
                 df['username'] = df['username'].str.strip()
                 # Crear columna normalizada sin sufijos (toma la parte antes del primer _)
                 df['username_normalized'] = df['username'].str.split('_').str[0]
+
+            # Aplicar lógica de créditos efectiva por unit_type
+            df = self._build_effective_credit_columns(df)
             
             self.df_credits = df
             self.file_path = file_path
@@ -108,12 +133,12 @@ class GitHubCreditsCSVLoader:
                     'last_date': None
                 }
             
-            # Calcular agregados - USAR aic_gross_amount como créditos usados
+            # Calcular agregados según la lógica por unit_type
             summary = {
                 'username': username,
-                'creditos_usados': df_user['aic_gross_amount'].sum() if 'aic_gross_amount' in df_user.columns else 0,
+                'creditos_usados': df_user['effective_creditos_usados'].sum() if 'effective_creditos_usados' in df_user.columns else 0,
                 'total_quantity': df_user['quantity'].sum() if 'quantity' in df_user.columns else 0,
-                'total_aic_quantity': df_user['aic_quantity'].sum() if 'aic_quantity' in df_user.columns else 0,
+                'total_aic_quantity': df_user['effective_aic_quantity'].sum() if 'effective_aic_quantity' in df_user.columns else 0,
                 'records_count': len(df_user),
                 'models_used': df_user['model'].unique().tolist() if 'model' in df_user.columns else [],
                 'first_date': df_user['date'].min() if 'date' in df_user.columns else None,
@@ -138,11 +163,11 @@ class GitHubCreditsCSVLoader:
             return pd.DataFrame()
         
         try:
-            # Agrupar por usuario NORMALIZADO
+            # Agrupar por usuario NORMALIZADO usando columnas efectivas
             summary = self.df_credits.groupby('username_normalized').agg({
                 'quantity': 'sum',
-                'aic_quantity': 'sum',
-                'aic_gross_amount': 'sum',
+                'effective_aic_quantity': 'sum',
+                'effective_creditos_usados': 'sum',
                 'date': ['min', 'max', 'count']
             }).reset_index()
             
@@ -267,8 +292,8 @@ class GitHubCreditsCSVLoader:
                 'total_records': len(self.df_credits),
                 'unique_users': self.df_credits['username_normalized'].nunique() if 'username_normalized' in self.df_credits.columns else 0,
                 'total_quantity': self.df_credits['quantity'].sum() if 'quantity' in self.df_credits.columns else 0,
-                'total_creditos_usados': self.df_credits['aic_gross_amount'].sum() if 'aic_gross_amount' in self.df_credits.columns else 0,
-                'total_aic_quantity': self.df_credits['aic_quantity'].sum() if 'aic_quantity' in self.df_credits.columns else 0,
+                'total_creditos_usados': self.df_credits['effective_creditos_usados'].sum() if 'effective_creditos_usados' in self.df_credits.columns else 0,
+                'total_aic_quantity': self.df_credits['effective_aic_quantity'].sum() if 'effective_aic_quantity' in self.df_credits.columns else 0,
                 'date_range': {
                     'start': self.df_credits['date'].min() if 'date' in self.df_credits.columns else None,
                     'end': self.df_credits['date'].max() if 'date' in self.df_credits.columns else None

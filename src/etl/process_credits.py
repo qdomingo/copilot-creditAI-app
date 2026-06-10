@@ -71,6 +71,23 @@ def calculate_creditos_base(tipo_licencia: str) -> int:
     return 0
 
 
+def calculate_effective_creditos_usados(df_credits: pd.DataFrame) -> pd.Series:
+    """
+    Calcular créditos usados por fila según unit_type.
+
+    Reglas:
+    - unit_type=ai-credits: usar quantity * 0.01 (convertir de créditos a dólares)
+    - resto (incl. requests): mantener aic_gross_amount
+    """
+    unit_type = df_credits.get('unit_type', pd.Series('', index=df_credits.index)).astype(str).str.strip().str.lower()
+    is_ai_credits = unit_type == 'ai-credits'
+
+    quantity = pd.to_numeric(df_credits.get('quantity', pd.Series(0, index=df_credits.index)), errors='coerce').fillna(0)
+    aic_gross_amount = pd.to_numeric(df_credits.get('aic_gross_amount', pd.Series(0, index=df_credits.index)), errors='coerce').fillna(0)
+
+    return aic_gross_amount.where(~is_ai_credits, quantity * 0.01)
+
+
 def process_licenses_and_credits(
     excel_file_path: str,
     csv_file_path: str,
@@ -184,14 +201,19 @@ def process_licenses_and_credits(
             logger.error("No se encontró columna 'username' en el CSV")
             raise ValueError("El CSV debe contener una columna 'username'")
         
-        # 5. Agrupar CSV por alias y sumar aic_gross_amount
+        # 5. Agrupar CSV por alias con lógica por unit_type
         logger.info("Agrupando créditos por usuario...")
+        if 'quantity' not in df_credits.columns:
+            logger.error("No se encontró columna 'quantity' en el CSV")
+            raise ValueError("El CSV debe contener una columna 'quantity'")
+
         if 'aic_gross_amount' not in df_credits.columns:
-            logger.error("No se encontró columna 'aic_gross_amount' en el CSV")
-            raise ValueError("El CSV debe contener una columna 'aic_gross_amount'")
+            logger.warning("No se encontró columna 'aic_gross_amount' en el CSV; se asumirá 0 para unit_type distinto de ai-credits")
+
+        df_credits['creditos_usados_calculados'] = calculate_effective_creditos_usados(df_credits)
         
         df_credits_agg = df_credits.groupby('alias_csv').agg({
-            'aic_gross_amount': 'sum',
+            'creditos_usados_calculados': 'sum',
             'date': ['min', 'max', 'count']
         }).reset_index()
         
@@ -313,7 +335,7 @@ def validate_csv_structure(df: pd.DataFrame) -> bool:
     Returns:
         True si es válido, False en caso contrario
     """
-    required_columns = ['username', 'aic_gross_amount', 'date']
+    required_columns = ['username', 'quantity', 'date']
     
     missing_required = [col for col in required_columns if col not in df.columns]
     

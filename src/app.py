@@ -538,94 +538,6 @@ def main():
             else:
                 st.info("📊 No hay datos de modelos disponibles. Procesa los archivos para ver esta información.")
 
-            # Análisis detallado por usuario (a partir del CSV consolidado)
-            st.divider()
-            st.markdown("### 👤 Análisis Detallado por Usuario")
-
-            if st.session_state.df_csv_raw is not None and 'username' in st.session_state.df_csv_raw.columns:
-                df_csv = st.session_state.df_csv_raw.copy()
-
-                # Detectar columna principal de tokens (si existe)
-                token_col = None
-                token_candidates = ['aic_quantity', 'total_tokens', 'tokens', 'input_tokens', 'prompt_tokens']
-                for col in token_candidates:
-                    if col in df_csv.columns:
-                        token_col = col
-                        break
-
-                usernames = sorted(df_csv['username'].dropna().astype(str).unique().tolist())
-
-                if usernames:
-                    selected_user = st.selectbox(
-                        "Selecciona un usuario",
-                        options=usernames,
-                        help="Se mostrarán llamadas y consumo de tokens/créditos del usuario seleccionado"
-                    )
-
-                    df_user = df_csv[df_csv['username'].astype(str) == selected_user].copy()
-
-                    if 'date' in df_user.columns:
-                        df_user['date'] = pd.to_datetime(df_user['date'], errors='coerce')
-
-                    # Normalizar campos numéricos para evitar errores de tipo
-                    for numeric_col in ['quantity', 'aic_gross_amount', 'aic_quantity', 'total_tokens', 'tokens', 'input_tokens', 'prompt_tokens']:
-                        if numeric_col in df_user.columns:
-                            df_user[numeric_col] = pd.to_numeric(df_user[numeric_col], errors='coerce').fillna(0)
-
-                    total_registros = len(df_user)
-                    total_llamadas = float(df_user['quantity'].sum()) if 'quantity' in df_user.columns else float(total_registros)
-                    total_tokens = float(df_user[token_col].sum()) if token_col else 0.0
-                    total_creditos = float(df_user['aic_gross_amount'].sum()) if 'aic_gross_amount' in df_user.columns else 0.0
-
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        st.metric("Registros", f"{total_registros:,}")
-                    with col2:
-                        st.metric("Llamadas", f"{total_llamadas:,.2f}")
-                    with col3:
-                        st.metric("Tokens", f"{total_tokens:,.2f}" if token_col else "N/D")
-                    with col4:
-                        st.metric("Créditos ($)", f"{total_creditos:,.4f}")
-
-                    # Resumen diario
-                    if 'date' in df_user.columns:
-                        df_daily = df_user.dropna(subset=['date']).copy()
-                        if not df_daily.empty:
-                            agg_map = {}
-                            if 'quantity' in df_daily.columns:
-                                agg_map['quantity'] = 'sum'
-                            if token_col:
-                                agg_map[token_col] = 'sum'
-                            if 'aic_gross_amount' in df_daily.columns:
-                                agg_map['aic_gross_amount'] = 'sum'
-
-                            if agg_map:
-                                daily_summary = df_daily.groupby(df_daily['date'].dt.date).agg(agg_map).reset_index()
-                                daily_summary = daily_summary.sort_values('date')
-
-                                st.markdown("#### Evolución Diaria")
-                                st.line_chart(daily_summary.set_index('date'), use_container_width=True)
-
-                    # Detalle de llamadas/eventos
-                    st.markdown("#### Detalle de Consumo")
-                    detail_cols = [
-                        col for col in [
-                            'date', 'model', 'sku', 'product', 'unit_type', 'quantity', token_col, 'aic_gross_amount',
-                            'organization', 'cost_center_name'
-                        ] if col and col in df_user.columns
-                    ]
-
-                    if detail_cols:
-                        if 'date' in df_user.columns:
-                            df_user = df_user.sort_values('date', ascending=False)
-                        st.dataframe(df_user[detail_cols], use_container_width=True, height=380)
-                    else:
-                        st.info("No hay columnas de detalle disponibles para mostrar.")
-                else:
-                    st.info("No se encontraron usuarios en el CSV cargado.")
-            else:
-                st.info("Carga y procesa al menos un CSV con columna 'username' para habilitar este análisis.")
-            
             # Exportar reporte
             st.divider()
             
@@ -739,11 +651,24 @@ def main():
                         if c in df_user.columns:
                             df_user[c] = pd.to_numeric(df_user[c], errors='coerce').fillna(0)
 
+                    # Cálculo efectivo para visualización:
+                    # - unit_type=ai-credits: tokens=quantity, consumo=quantity*0.01
+                    # - resto: tokens=aic_quantity, consumo=aic_gross_amount
+                    unit_type = df_user.get('unit_type', pd.Series('', index=df_user.index)).astype(str).str.strip().str.lower()
+                    is_ai_credits = unit_type == 'ai-credits'
+
+                    quantity = pd.to_numeric(df_user.get('quantity', pd.Series(0, index=df_user.index)), errors='coerce').fillna(0)
+                    aic_quantity = pd.to_numeric(df_user.get('aic_quantity', pd.Series(0, index=df_user.index)), errors='coerce').fillna(0)
+                    aic_gross_amount = pd.to_numeric(df_user.get('aic_gross_amount', pd.Series(0, index=df_user.index)), errors='coerce').fillna(0)
+
+                    df_user['tokens_usados_visual'] = aic_quantity.where(~is_ai_credits, quantity)
+                    df_user['consumo_usd_visual'] = aic_gross_amount.where(~is_ai_credits, quantity * 0.01)
+
                     # Métricas principales
                     total_interacciones = len(df_user)
                     total_dias = df_user['date'].dt.date.nunique() if 'date' in df_user.columns else 0
-                    total_tokens = float(df_user['aic_quantity'].sum()) if 'aic_quantity' in df_user.columns else 0.0
-                    total_consumo = float(df_user['aic_gross_amount'].sum()) if 'aic_gross_amount' in df_user.columns else 0.0
+                    total_tokens = float(df_user['tokens_usados_visual'].sum())
+                    total_consumo = float(df_user['consumo_usd_visual'].sum())
                     agentes_usados = df_user['model'].dropna().nunique() if 'model' in df_user.columns else 0
 
                     col1, col2, col3, col4, col5 = st.columns(5)
@@ -752,19 +677,17 @@ def main():
                     with col2:
                         st.metric("Días con uso", f"{total_dias:,}")
                     with col3:
-                        st.metric("Tokens usados", f"{total_tokens:,.2f}" if 'aic_quantity' in df_user.columns else "N/D")
+                        st.metric("Tokens usados", f"{total_tokens:,.2f}")
                     with col4:
-                        st.metric("Consumo ($)", f"{total_consumo:,.4f}" if 'aic_gross_amount' in df_user.columns else "N/D")
+                        st.metric("Consumo ($)", f"{total_consumo:,.4f}")
                     with col5:
                         st.metric("Agentes/Modelos", f"{agentes_usados:,}" if 'model' in df_user.columns else "N/D")
 
                     st.markdown("#### 📊 Consumo diario")
                     if 'date' in df_user.columns and not df_user['date'].dropna().empty:
                         daily_agg = {'quantity': 'sum'} if 'quantity' in df_user.columns else {}
-                        if 'aic_quantity' in df_user.columns:
-                            daily_agg['aic_quantity'] = 'sum'
-                        if 'aic_gross_amount' in df_user.columns:
-                            daily_agg['aic_gross_amount'] = 'sum'
+                        daily_agg['tokens_usados_visual'] = 'sum'
+                        daily_agg['consumo_usd_visual'] = 'sum'
 
                         if daily_agg:
                             df_daily_base = df_user.dropna(subset=['date']).copy()
@@ -785,7 +708,7 @@ def main():
                     detail_cols = [
                         col for col in [
                             'date', 'username', 'alias', 'nombre_empleado', 'product', 'sku', 'model',
-                            'quantity', 'unit_type', 'aic_quantity', 'aic_gross_amount',
+                            'quantity', 'unit_type', 'tokens_usados_visual', 'consumo_usd_visual', 'aic_quantity', 'aic_gross_amount',
                             'gross_amount', 'discount_amount', 'net_amount',
                             'organization', 'cost_center_name', 'exceeds_quota', 'total_monthly_quota'
                         ] if col in df_user.columns
