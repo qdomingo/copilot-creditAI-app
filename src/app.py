@@ -181,6 +181,110 @@ def process_files(excel_file, csv_file):
         return False
 
 
+def _find_first_existing_column(df: pd.DataFrame, candidates):
+    """Encontrar la primera columna existente por nombre (insensible a mayúsculas)."""
+    col_map = {str(col).strip().lower(): col for col in df.columns}
+    for candidate in candidates:
+        if candidate in col_map:
+            return col_map[candidate]
+    return None
+
+
+def apply_excel_user_filter(df: pd.DataFrame, uploaded_excel):
+    """Aplicar filtro de usuarios a partir de un Excel con cod_empleado o alias."""
+    try:
+        df_filter = pd.read_excel(uploaded_excel)
+    except Exception as e:
+        return df, {
+            'ok': False,
+            'message': f"No se pudo leer el Excel: {e}",
+            'type': 'error'
+        }
+
+    if df_filter.empty:
+        return df, {
+            'ok': False,
+            'message': "El Excel de filtro está vacío.",
+            'type': 'warning'
+        }
+
+    code_candidates = [
+        'cod_empleado',
+        'codigo_empleado',
+        'código_empleado',
+        'codigo empleado',
+        'código empleado'
+    ]
+    alias_candidates = ['cdalias', 'alias', 'usuario', 'username']
+
+    code_col_file = _find_first_existing_column(df_filter, code_candidates)
+    alias_col_file = _find_first_existing_column(df_filter, alias_candidates)
+
+    if not code_col_file and not alias_col_file:
+        return df, {
+            'ok': False,
+            'message': (
+                "El Excel de filtro debe contener obligatoriamente una columna de "
+                "'cod_empleado' o 'alias/cdalias'."
+            ),
+            'type': 'error'
+        }
+
+    mask = pd.Series([False] * len(df), index=df.index)
+    applied_with = []
+    skipped_with = []
+
+    if code_col_file:
+        code_values = {
+            str(value).strip()
+            for value in df_filter[code_col_file].dropna().tolist()
+            if str(value).strip() != ''
+        }
+        if code_values:
+            if 'cod_empleado' in df.columns:
+                mask = mask | df['cod_empleado'].astype(str).str.strip().isin(code_values)
+                applied_with.append(f"código empleado ({len(code_values)} valor(es))")
+            else:
+                skipped_with.append("código empleado (no existe en datos cargados)")
+
+    if alias_col_file:
+        alias_values = {
+            str(value).strip().lower()
+            for value in df_filter[alias_col_file].dropna().tolist()
+            if str(value).strip() != ''
+        }
+        if alias_values:
+            if 'cdalias' in df.columns:
+                mask = mask | df['cdalias'].astype(str).str.strip().str.lower().isin(alias_values)
+                applied_with.append(f"alias ({len(alias_values)} valor(es))")
+            elif 'alias' in df.columns:
+                mask = mask | df['alias'].astype(str).str.strip().str.lower().isin(alias_values)
+                applied_with.append(f"alias ({len(alias_values)} valor(es))")
+            else:
+                skipped_with.append("alias (no existe en datos cargados)")
+
+    if not applied_with:
+        details = ", ".join(skipped_with) if skipped_with else "no hay valores válidos"
+        return df, {
+            'ok': False,
+            'message': f"No se pudo aplicar el filtro por Excel: {details}.",
+            'type': 'warning'
+        }
+
+    filtered_df = df[mask]
+
+    return filtered_df, {
+        'ok': True,
+        'type': 'success',
+        'message': (
+            f"Filtro por Excel aplicado con {', '.join(applied_with)}. "
+            f"Coincidencias: {len(filtered_df)} usuario(s)."
+        ),
+        'matched_rows': len(filtered_df),
+        'original_rows': len(df)
+    }
+
+
 def main():
     """Función principal de la aplicación"""
     
@@ -335,7 +439,30 @@ def main():
             # Filtros
             filters = show_filters_sidebar(df_display)
             df_filtered = apply_filters(df_display, filters)
-            
+
+            st.markdown("### 🎯 Filtro por Excel de usuarios")
+            st.caption(
+                "Sube un Excel con lista de usuarios para filtrar grupos específicos. "
+                "Debe incluir 'cod_empleado' o 'alias/cdalias'."
+            )
+
+            excel_filter_file = st.file_uploader(
+                "Adjuntar Excel de filtro (usuarios)",
+                type=['xlsx', 'xls'],
+                key='users_excel_filter_uploader',
+                help="Columnas válidas: cod_empleado, codigo_empleado, alias o cdalias"
+            )
+
+            if excel_filter_file is not None:
+                df_filtered, excel_filter_result = apply_excel_user_filter(df_filtered, excel_filter_file)
+
+                if excel_filter_result['type'] == 'success':
+                    st.success(excel_filter_result['message'])
+                elif excel_filter_result['type'] == 'warning':
+                    st.warning(excel_filter_result['message'])
+                else:
+                    st.error(excel_filter_result['message'])
+
             st.subheader(f"👥 Lista de Usuarios ({len(df_filtered)} registros)")
             
             # Buscador y botón de estimación
