@@ -52,7 +52,7 @@ def calculate_creditos_base(tipo_licencia: str) -> int:
         tipo_licencia: Tipo de licencia (ej: "Github + Copilot Business", "Github + CB + ...")
         
     Returns:
-        Créditos base: 30 para Business/CB, 70 para Enterprise/CE, 0 para otros
+        Créditos base: 19 para Business/CB, 39 para Enterprise/CE, 0 para otros
     """
     if pd.isna(tipo_licencia) or not isinstance(tipo_licencia, str):
         return 0
@@ -61,11 +61,11 @@ def calculate_creditos_base(tipo_licencia: str) -> int:
     
     # Buscar Business o CB
     if 'business' in tipo_lower or 'cb' in tipo_lower.split():
-        return 30
+        return 19
     
     # Buscar Enterprise o CE
     if 'enterprise' in tipo_lower or 'ce' in tipo_lower.split():
-        return 70
+        return 39
     
     # Resto
     return 0

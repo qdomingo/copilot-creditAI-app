@@ -91,33 +91,28 @@ def transformar_excel_licencias(input_path: str, output_path: str) -> pd.DataFra
         def calcular_creditos_base(tipo_licencia):
             """
             Calcula los créditos base según el tipo de licencia:
-            - Copilot Business (CB) o CB + DebtDoctor (todos los grupos) → 30 créditos
-            - Copilot Enterprise (CE) o CE + DebtDoctor (todos los grupos) → 30 créditos
+            - Copilot Business (CB) o CB + DebtDoctor (todos los grupos) → 19 créditos
+            - Copilot Enterprise (CE) o CE + DebtDoctor (todos los grupos) → 39 créditos
             - Otros → 0
             
             Ejemplos:
-            - "Github + CB + DebtDoctor Grupo10" → 30
-            - "Github + CE + DebtDoctor Grupo5" → 30
-            - "Copilot Business" → 30
-            - "Copilot Enterprise" → 70 (solo si NO tiene DebtDoctor)
+            - "Github + CB + DebtDoctor Grupo10" → 19
+            - "Github + CE + DebtDoctor Grupo5" → 39
+            - "Copilot Business" → 19
+            - "Copilot Enterprise" → 39
             """
             if pd.isna(tipo_licencia) or tipo_licencia == "":
                 return 0
             
             tipo_str = str(tipo_licencia).strip().upper()
             
-            # Verificar si tiene DebtDoctor (siempre 30 créditos, sea CB o CE)
-            if 'DEBTDOCTOR' in tipo_str or 'DEBT DOCTOR' in tipo_str:
-                return 30
-            
-            # Sin DebtDoctor: verificar tipo base
-            # Copilot Enterprise sin DebtDoctor → 70 créditos
+            # Enterprise conserva su budget tanto con como sin DebtDoctor
             if 'COPILOT ENTERPRISE' in tipo_str or tipo_str.startswith('CE ') or tipo_str == 'CE':
-                return 70
+                return 39
             
-            # Copilot Business sin DebtDoctor → 30 créditos
+            # Business conserva su budget tanto con como sin DebtDoctor
             if 'COPILOT BUSINESS' in tipo_str or tipo_str.startswith('CB ') or tipo_str == 'CB':
-                return 30
+                return 19
             
             return 0
         
