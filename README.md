@@ -38,8 +38,10 @@ streamlit run src/app.py
 
 1. Sube tu Excel de licencias
 2. Sube el CSV de créditos de GitHub
-3. Combina los datos
-4. Explora dashboards y genera reportes
+3. Opcionalmente, sube el Excel de control de aumento de budget con las columnas `User` y `Credits Available Current Month`.
+4. Pulsa **Procesar Archivos** y explora dashboards y reportes.
+
+El presupuesto del Excel opcional sustituye al calculado por licencia para los usuarios cuyo alias coincida (por ejemplo, `rpedra_indra` coincide con `rpedra`). Los créditos del Excel se convierten a dólares: 100 créditos = $1. Los usuarios sin coincidencia mantienen su presupuesto por licencia. El dashboard muestra **Créditos Base Por Licencias** (sin aumentos) y **Créditos Base Con Aumentos** (presupuesto efectivo).
 
 ### 3. Obtener CSV de Créditos
 

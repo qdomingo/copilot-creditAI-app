@@ -14,7 +14,7 @@ if str(root_dir) not in sys.path:
     sys.path.insert(0, str(root_dir))
 
 from src.utils.logger import setup_logger
-from src.etl.process_credits import process_licenses_and_credits
+from src.etl.process_credits import calculate_creditos_base, process_licenses_and_credits
 from src.dashboard.components import (
     show_metric_card,
     create_user_usage_chart,
@@ -136,7 +136,7 @@ def clean_processed_data():
         return False
 
 
-def process_files(excel_file, csv_file):
+def process_files(excel_file, csv_file, budget_file=None):
     """Procesar archivos Excel y CSV"""
     try:
         # Crear archivos temporales
@@ -156,7 +156,8 @@ def process_files(excel_file, csv_file):
         with st.spinner("Procesando archivos..."):
             df_result, output_path = process_licenses_and_credits(
                 tmp_excel_path,
-                tmp_csv_path
+                tmp_csv_path,
+                budget_file_path=budget_file
             )
             
             st.session_state.df_usuarios = df_result
@@ -321,13 +322,21 @@ def main():
             help="CSV agregado con el histórico diario (username, aic_gross_amount, date, etc.)",
             key="csv_uploader"
         )
+
+        st.markdown("### 📈 Control de Aumento de Budget")
+        budget_file = st.file_uploader(
+            "Subir Excel de budget real (opcional)",
+            type=['xlsx', 'xls'],
+            help="Columnas: User y Credits Available Current Month (créditos; 100 créditos = 1 $)",
+            key="budget_uploader"
+        )
         
         st.divider()
         
         # Botón de procesar
         if excel_file is not None and csv_file is not None:
             if st.button("🔄 Procesar Archivos", use_container_width=True, type="primary"):
-                if process_files(excel_file, csv_file):
+                if process_files(excel_file, csv_file, budget_file):
                     st.rerun()
         else:
             st.info("ℹ️ Carga ambos archivos para procesar")
@@ -372,8 +381,8 @@ def main():
             else:
                 df_display = df.copy()
             
-            # Métricas principales (4 columnas)
-            col1, col2, col3, col4 = st.columns(4)
+            # Métricas principales
+            col1, col2, col3 = st.columns(3)
             
             with col1:
                 show_metric_card(
@@ -383,14 +392,27 @@ def main():
                 )
             
             with col2:
-                total_creditos_base = df_display['creditos_base'].sum() if 'creditos_base' in df_display.columns else 0
+                if 'creditos_base_licencia' in df_display.columns:
+                    total_creditos_licencias = df_display['creditos_base_licencia'].sum()
+                else:
+                    total_creditos_licencias = df_display['tipo_licencia'].apply(calculate_creditos_base).sum()
                 show_metric_card(
-                    "Créditos Base ($)",
-                    f"{total_creditos_base:.0f}",
+                    "Créditos Base Por Licencias ($)",
+                    f"{total_creditos_licencias:.0f}",
                     icon="💳"
                 )
             
             with col3:
+                total_creditos_base = df_display['creditos_base'].sum() if 'creditos_base' in df_display.columns else 0
+                show_metric_card(
+                    "Créditos Base Con Aumentos ($)",
+                    f"{total_creditos_base:.2f}",
+                    icon="📈"
+                )
+
+            col4, col5 = st.columns(2)
+
+            with col4:
                 total_creditos_usados = df_display['creditos_usados'].sum() if 'creditos_usados' in df_display.columns else 0
                 show_metric_card(
                     "Créditos Usados ($)",
@@ -398,7 +420,7 @@ def main():
                     icon="📊"
                 )
             
-            with col4:
+            with col5:
                 usuarios_activos = (df_display['creditos_usados'] > 0).sum() if 'creditos_usados' in df_display.columns else 0
                 show_metric_card(
                     "Usuarios Activos",

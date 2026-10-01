@@ -4,7 +4,7 @@ Procesamiento unificado de licencias y créditos de GitHub
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
-from typing import Tuple, Optional
+from typing import Tuple, Optional, IO, Union
 from loguru import logger
 
 
@@ -88,10 +88,41 @@ def calculate_effective_creditos_usados(df_credits: pd.DataFrame) -> pd.Series:
     return aic_gross_amount.where(~is_ai_credits, quantity * 0.01)
 
 
+def apply_budget_increases(df_users: pd.DataFrame, budget_file: Union[str, IO[bytes]]) -> pd.DataFrame:
+    df_budget = pd.read_excel(budget_file)
+    df_budget.columns = df_budget.columns.astype(str).str.strip().str.lower()
+    required = {'user', 'credits available current month'}
+    if not required.issubset(df_budget.columns):
+        raise ValueError(f"El Excel de aumentos debe incluir: {', '.join(sorted(required))}")
+
+    df_budget = df_budget[['user', 'credits available current month']].copy()
+    df_budget = df_budget[
+        df_budget['user'].notna() & df_budget['user'].astype(str).str.strip().ne('')
+        & df_budget['credits available current month'].notna()
+        & df_budget['credits available current month'].astype(str).str.strip().ne('')
+    ].copy()
+    df_budget['cdalias'] = df_budget['user'].apply(extract_alias_from_username)
+    df_budget = df_budget[df_budget['cdalias'].isin(df_users['cdalias'])].copy()
+    amounts = pd.to_numeric(df_budget['credits available current month'], errors='coerce')
+    if (df_budget['cdalias'] == '').any() or amounts.isna().any() or (amounts < 0).any():
+        invalid = (df_budget['cdalias'] == '') | amounts.isna() | (amounts < 0)
+        rows = ', '.join(str(row + 2) for row in df_budget.index[invalid][:5])
+        raise ValueError(f'El Excel de aumentos contiene créditos disponibles inválidos en fila(s): {rows}')
+    if df_budget['cdalias'].duplicated().any():
+        raise ValueError('El Excel de aumentos contiene alias duplicados')
+
+    budget_by_alias = pd.Series(amounts.to_numpy() * 0.01, index=df_budget['cdalias'])
+    result = df_users.copy()
+    overrides = result['cdalias'].map(budget_by_alias)
+    result['creditos_base'] = overrides.fillna(result['creditos_base'])
+    return result
+
+
 def process_licenses_and_credits(
     excel_file_path: str,
     csv_file_path: str,
-    output_path: Optional[str] = None
+    output_path: Optional[str] = None,
+    budget_file_path: Optional[Union[str, IO[bytes]]] = None
 ) -> Tuple[pd.DataFrame, str]:
     """
     Procesar Excel de licencias y CSV de créditos de GitHub
@@ -241,6 +272,9 @@ def process_licenses_and_credits(
         # Calcular créditos_base según tipo_licencia
         logger.info("Calculando créditos base según tipo de licencia...")
         df_final['creditos_base'] = df_final['tipo_licencia'].apply(calculate_creditos_base)
+        df_final['creditos_base_licencia'] = df_final['creditos_base']
+        if budget_file_path is not None:
+            df_final = apply_budget_increases(df_final, budget_file_path)
         
         if 'estado_licencia' not in df_final.columns:
             # Como ya filtramos por "Asignada", todos tienen ese estado
@@ -266,6 +300,7 @@ def process_licenses_and_credits(
             'tipo_licencia',
             'estado_licencia',
             'creditos_base',
+            'creditos_base_licencia',
             'creditos_usados',
             'grupo'
         ]
