@@ -14,7 +14,11 @@ if str(root_dir) not in sys.path:
     sys.path.insert(0, str(root_dir))
 
 from src.utils.logger import setup_logger
-from src.etl.process_credits import calculate_creditos_base, process_licenses_and_credits
+from src.etl.process_credits import (
+    calculate_creditos_base,
+    process_licenses_and_credits,
+    build_consumption_comparison
+)
 from src.dashboard.components import (
     show_metric_card,
     create_user_usage_chart,
@@ -79,6 +83,8 @@ def init_session_state():
         st.session_state.excel_file = None
     if 'csv_file' not in st.session_state:
         st.session_state.csv_file = None
+    if 'df_budget_raw' not in st.session_state:
+        st.session_state.df_budget_raw = None
 
 
 def get_latest_file_in_dir(directory: Path, pattern: str = "*.xlsx"):
@@ -126,6 +132,7 @@ def clean_processed_data():
         # Limpiar session_state
         st.session_state.df_usuarios = None
         st.session_state.df_csv_raw = None
+        st.session_state.df_budget_raw = None
         st.session_state.archivo_procesado = None
         
         logger.info("Datos procesados limpiados")
@@ -147,6 +154,11 @@ def process_files(excel_file, csv_file, budget_file=None):
         # Cargar CSV agregado (incluye todos los días)
         df_csv_raw = pd.read_csv(csv_file)
 
+        df_budget_raw = None
+        if budget_file is not None:
+            df_budget_raw = pd.read_excel(budget_file)
+            budget_file.seek(0)
+
         # Crear CSV temporal para el proceso ETL existente
         with tempfile.NamedTemporaryFile(delete=False, suffix='.csv') as tmp_csv:
             df_csv_raw.to_csv(tmp_csv.name, index=False)
@@ -162,6 +174,7 @@ def process_files(excel_file, csv_file, budget_file=None):
             
             st.session_state.df_usuarios = df_result
             st.session_state.df_csv_raw = df_csv_raw  # Guardar CSV original
+            st.session_state.df_budget_raw = df_budget_raw
             st.session_state.archivo_procesado = output_path
             
             # Limpiar archivos temporales
@@ -625,6 +638,83 @@ def main():
                 file_name=f"usuarios_filtrados_{datetime.now().strftime('%Y%m%d')}.csv",
                 mime="text/csv"
             )
+
+            st.divider()
+            st.markdown("### 🔍 Contrastar Consumos (CSV de créditos vs Excel de budget)")
+            if st.session_state.df_csv_raw is None or st.session_state.df_budget_raw is None:
+                st.info("ℹ️ Procesa los archivos incluyendo el Excel de budget para contrastar consumos.")
+            elif st.button("🔍 Contrastar Consumos", type="primary"):
+                st.session_state.show_consumption_comparison = True
+
+            if (
+                st.session_state.get('show_consumption_comparison', False)
+                and st.session_state.df_csv_raw is not None
+                and st.session_state.df_budget_raw is not None
+            ):
+                try:
+                    df_comparison = build_consumption_comparison(
+                        st.session_state.df_csv_raw,
+                        st.session_state.df_budget_raw
+                    )
+                except ValueError as e:
+                    st.error(f"❌ {e}")
+                else:
+                    st.caption(
+                        "Relación por alias (User del budget, ej. edomingo_indra → edomingo). "
+                        "'Credits Used' del budget convertido a $ (100 créditos = 1 $). Tolerancia: 0.01 $."
+                    )
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("👥 Usuarios en CSV", len(df_comparison))
+                    col2.metric("✅ Cuadran", int((df_comparison['¿Cuadra?'] == 'Sí').sum()))
+                    col3.metric("❓ No están en Budget", int((df_comparison['¿Aparece en Budget?'] == 'No').sum()))
+
+                    fcol1, fcol2, fcol3 = st.columns([2, 1, 1])
+                    with fcol1:
+                        cmp_user = st.text_input("🔍 Filtrar por usuario", key="cmp_filter_user")
+                    with fcol2:
+                        cmp_cuadra = st.selectbox("¿Cuadra?", ["Todos", "Sí", "No"], key="cmp_filter_cuadra")
+                    with fcol3:
+                        cmp_budget = st.selectbox("¿Aparece en Budget?", ["Todos", "Sí", "No"], key="cmp_filter_budget")
+
+                    if cmp_user:
+                        df_comparison = df_comparison[
+                            df_comparison['Usuario'].str.contains(cmp_user.strip(), case=False, na=False, regex=False)
+                        ]
+                    if cmp_cuadra != "Todos":
+                        df_comparison = df_comparison[df_comparison['¿Cuadra?'] == cmp_cuadra]
+                    if cmp_budget != "Todos":
+                        df_comparison = df_comparison[df_comparison['¿Aparece en Budget?'] == cmp_budget]
+                    st.caption(f"Mostrando {len(df_comparison)} registro(s)")
+
+                    def color_comparison(row):
+                        color = '#ccffcc' if row['¿Cuadra?'] == 'Sí' else '#ffcccc'
+                        return [f'background-color: {color}'] * len(row)
+
+                    st.dataframe(
+                        df_comparison.style.apply(color_comparison, axis=1).format({
+                            'Créditos Usados CSV ($)': '{:.2f}',
+                            'Credits Used Budget ($)': '{:.2f}',
+                            'Diferencia ($)': '{:.2f}'
+                        }, na_rep='-'),
+                        use_container_width=True,
+                        height=400
+                    )
+                    tcol1, tcol2, tcol3 = st.columns(3)
+                    tcol1.metric("Σ Créditos Usados CSV ($)", f"{df_comparison['Créditos Usados CSV ($)'].sum():,.2f}")
+                    tcol2.metric("Σ Credits Used Budget ($)", f"{df_comparison['Credits Used Budget ($)'].sum():,.2f}")
+                    tcol3.metric("Σ Diferencia ($)", f"{df_comparison['Diferencia ($)'].sum():,.2f}")
+                    col_dl, col_close = st.columns(2)
+                    with col_dl:
+                        st.download_button(
+                            label="📥 Descargar contraste",
+                            data=df_comparison.to_csv(index=False).encode('utf-8'),
+                            file_name=f"contraste_consumos_{datetime.now().strftime('%Y%m%d')}.csv",
+                            mime="text/csv"
+                        )
+                    with col_close:
+                        if st.button("✖️ Cerrar Contraste"):
+                            st.session_state.show_consumption_comparison = False
+                            st.rerun()
         else:
             st.info("📁 No hay datos cargados.")
     

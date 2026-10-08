@@ -118,6 +118,45 @@ def apply_budget_increases(df_users: pd.DataFrame, budget_file: Union[str, IO[by
     return result
 
 
+def build_consumption_comparison(df_csv: pd.DataFrame, df_budget: pd.DataFrame, tolerance: float = 0.01) -> pd.DataFrame:
+    """Contrastar créditos usados ($) del CSV de billing con la columna 'Credits Used' del Excel de budget."""
+    if 'username' not in df_csv.columns:
+        raise ValueError("El CSV debe contener una columna 'username'")
+
+    df_budget = df_budget.copy()
+    df_budget.columns = df_budget.columns.astype(str).str.strip().str.lower()
+    if not {'user', 'credits used'}.issubset(df_budget.columns):
+        raise ValueError("El Excel de budget debe incluir las columnas: User y Credits Used")
+
+    df_csv = df_csv.copy()
+    df_csv['cdalias'] = df_csv['username'].apply(extract_alias_from_username)
+    df_csv['creditos_usados'] = calculate_effective_creditos_usados(df_csv)
+    df_csv = df_csv[df_csv['cdalias'] != '']
+    csv_agg = df_csv.groupby('cdalias', as_index=False)['creditos_usados'].sum()
+
+    df_budget = df_budget[df_budget['user'].notna()].copy()
+    df_budget['cdalias'] = df_budget['user'].apply(extract_alias_from_username)
+    df_budget = df_budget[df_budget['cdalias'] != '']
+    df_budget['credits used'] = pd.to_numeric(df_budget['credits used'], errors='coerce').fillna(0)
+    # Budget en créditos (100 créditos = 1 $)
+    budget_agg = df_budget.groupby('cdalias', as_index=False)['credits used'].sum()
+    budget_agg['creditos_budget'] = budget_agg['credits used'] * 0.01
+
+    result = csv_agg.merge(budget_agg[['cdalias', 'creditos_budget']], on='cdalias', how='left')
+    in_budget = result['creditos_budget'].notna()
+    result['diferencia'] = result['creditos_usados'] - result['creditos_budget']
+    cuadra = in_budget & (result['diferencia'].abs() <= tolerance)
+
+    return pd.DataFrame({
+        'Usuario': result['cdalias'],
+        'Créditos Usados CSV ($)': result['creditos_usados'].round(2),
+        'Credits Used Budget ($)': result['creditos_budget'].round(2),
+        'Diferencia ($)': result['diferencia'].round(2),
+        '¿Cuadra?': cuadra.map({True: 'Sí', False: 'No'}),
+        '¿Aparece en Budget?': in_budget.map({True: 'Sí', False: 'No'}),
+    }).sort_values('Créditos Usados CSV ($)', ascending=False).reset_index(drop=True)
+
+
 def process_licenses_and_credits(
     excel_file_path: str,
     csv_file_path: str,
